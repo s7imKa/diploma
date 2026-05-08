@@ -59,8 +59,8 @@ You should see `(venv)` prefix in terminal.
 ## Step 4: Install Dependencies
 
 ```bash
-pip install --upgrade pip
-pip install -r requirements.txt
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
 ```
 
 This installs:
@@ -117,8 +117,8 @@ python --version  # Should be 3.7+
 **Try reinstalling:**
 
 ```bash
-pip uninstall PyQt5 opencv-python numpy
-pip install -r requirements.txt
+python3 -m pip uninstall PyQt5 opencv-python numpy
+python3 -m pip install -r requirements.txt
 ```
 
 ### Issue: "cannot find module" errors
@@ -249,7 +249,7 @@ python3.9 main.py
 # Or create venv with specific version
 python3.9 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 python main.py
 ```
 
@@ -334,7 +334,7 @@ Output: `dist/main.exe` (Windows) or `dist/main` (Unix)
 FROM python:3.9-slim
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN python -m pip install -r requirements.txt
 COPY . .
 CMD ["python", "main.py"]
 ```

@@ -26,10 +26,11 @@ class MatchResult:
     verdict: str  # "Object Found" | "Partial Match" | "Object Not Found"
     explanation: str  # User-friendly explanation of result
     is_homography_valid: bool  # True if inliers >= 8 for stable homography
-    match_time_ms: float = 0.0  # Час метчінгу у мілісекундах
-    start_tick: float = 0.0     # Значення time.perf_counter() на початку
-    end_tick: float = 0.0       # Значення time.perf_counter() в кінці
-    tick_diff: float = 0.0      # Різниця (end_tick - start_tick)
+    match_time_ms: float = 0.0
+    start_tick: float = 0.0
+    end_tick: float = 0.0
+    tick_diff: float = 0.0
+    ransac_vis: Optional[np.ndarray] = None  # До/після RANSAC для рисунка 3.4
 
 
 class ImageMatcher:
@@ -144,10 +145,13 @@ class ImageMatcher:
                 mask = None
 
         adaptive_threshold = self._adaptive_threshold(similarity, similarity_good, len(good))
-        
-        # Draw matches: if inliers < 8, draw only good matches without homography frame
+
         matched_vis = self._draw_matches(img1, img2, keypoints1, keypoints2, good, mask, homography if is_homography_valid else None)
         heatmap = self._heatmap(img1, keypoints1)
+        ransac_vis = self._draw_ransac_comparison(
+            img1, img2, keypoints1, keypoints2, good, mask,
+            homography if is_homography_valid else None
+        )
 
         t1 = time.perf_counter()
         return MatchResult(
@@ -171,8 +175,75 @@ class ImageMatcher:
             match_time_ms=(t1-t0)*1000,
             start_tick=t0,
             end_tick=t1,
-            tick_diff=(t1-t0)
+            tick_diff=(t1-t0),
+            ransac_vis=ransac_vis,
         )
+
+    def _draw_ransac_comparison(self, img1, img2, kp1, kp2, good, mask, homography) -> np.ndarray:
+        """Two-row visualization: all good matches (before) / inliers+outliers (after RANSAC)."""
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # ── Row 1: before RANSAC — all good matches in yellow ──────────────
+        before = cv2.drawMatches(
+            img1, kp1, img2, kp2, good, None,
+            matchColor=(0, 200, 220),
+            singlePointColor=(120, 120, 120),
+            flags=cv2.DrawMatchesFlags_DEFAULT,
+        )
+        cv2.putText(before, f"До RANSAC: {len(good)} збігів (фільтр Lowe ratio)",
+                    (10, 28), font, 0.7, (0, 200, 220), 2, cv2.LINE_AA)
+
+        # ── Row 2: after RANSAC — inliers green, outliers red ──────────────
+        if mask is not None:
+            flat = mask.ravel()
+            inlier_matches  = [m for m, k in zip(good, flat) if k]
+            outlier_matches = [m for m, k in zip(good, flat) if not k]
+            inlier_count  = len(inlier_matches)
+            outlier_count = len(outlier_matches)
+        else:
+            inlier_matches, outlier_matches = good, []
+            inlier_count, outlier_count = len(good), 0
+
+        # draw inliers first
+        after = cv2.drawMatches(
+            img1, kp1, img2, kp2, inlier_matches, None,
+            matchColor=(0, 220, 0),
+            singlePointColor=(120, 120, 120),
+            flags=cv2.DrawMatchesFlags_DEFAULT,
+        )
+        # overlay outliers in red
+        if outlier_matches:
+            after = cv2.drawMatches(
+                img1, kp1, img2, kp2, outlier_matches, after,
+                matchColor=(0, 0, 220),
+                singlePointColor=None,
+                flags=cv2.DrawMatchesFlags_DRAW_OVER_OUTIMG,
+            )
+        # homography frame
+        if homography is not None and inlier_count >= 4:
+            h, w = img1.shape[:2]
+            corners = np.float32([[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]).reshape(-1, 1, 2)
+            proj = cv2.perspectiveTransform(corners, homography) + np.array([w, 0])
+            after = cv2.polylines(after, [np.int32(proj)], True, (0, 255, 255), 3, cv2.LINE_AA)
+
+        cv2.putText(after,
+                    f"Після RANSAC: {inlier_count} інлайєрів (зелені)  |  {outlier_count} відкинуто (червоні)",
+                    (10, 28), font, 0.7, (0, 220, 0), 2, cv2.LINE_AA)
+
+        # ── Ensure same width before vstack ────────────────────────────────
+        w_before, w_after = before.shape[1], after.shape[1]
+        if w_before != w_after:
+            target_w = max(w_before, w_after)
+            def pad_w(img, w):
+                pad = np.zeros((img.shape[0], w - img.shape[1], 3), dtype=np.uint8)
+                return np.hstack([img, pad])
+            if w_before < target_w:
+                before = pad_w(before, target_w)
+            else:
+                after = pad_w(after, target_w)
+
+        divider = np.full((6, before.shape[1], 3), (60, 60, 60), dtype=np.uint8)
+        return np.vstack([before, divider, after])
 
     def _ratio_filter(self, matches: Sequence[Sequence[cv2.DMatch]]) -> list[cv2.DMatch]:
         good = []

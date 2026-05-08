@@ -7,8 +7,8 @@ ORB/AKAZE/SIFT, BFMatcher, RANSAC, з вкладеним інтерфейсом,
 ## Запуск
 
 ```bash
-pip install -r requirements.txt
-python main.py
+python3 -m pip install -r requirements.txt
+python3 main.py
 ```
 
 ## Основні можливості

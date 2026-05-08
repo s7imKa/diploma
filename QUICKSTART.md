@@ -7,7 +7,7 @@
 cd cv_matcher_app
 
 # 2. Встановити залежності
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 
 # 3. Запустити app
 python main.py
@@ -193,7 +193,7 @@ BFMatcher для відповідності, і RANSAC для гомографі
 find . -type d -name __pycache__ -exec rm -rf {} +
 
 # Переінстальяти залежності
-pip install --force-reinstall -r requirements.txt
+python3 -m pip install --force-reinstall -r requirements.txt
 
 # Запустити заново
 python main.py

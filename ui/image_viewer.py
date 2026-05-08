@@ -3,7 +3,48 @@ import cv2
 import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
-from PyQt5.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsPixmapItem
+from PyQt5.QtWidgets import (
+    QGraphicsScene, QGraphicsView, QGraphicsPixmapItem,
+    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+)
+
+
+class FullscreenImageDialog(QDialog):
+    """Full-screen image viewer dialog opened on double-click."""
+
+    def __init__(self, img: np.ndarray, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Перегляд зображення — подвійний клік або Esc для закриття")
+        self.setWindowFlags(Qt.Window | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        hint = QLabel("🔍 Колесо миші — зум   |   ЛКМ — переміщення   |   Esc / F11 — закрити")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: #aaa; font-size: 9pt; padding: 2px;")
+        layout.addWidget(hint)
+
+        self._viewer = ImageViewer(self)
+        self._viewer.set_image(img)
+        layout.addWidget(self._viewer, 1)
+
+        btn_close = QPushButton("✕ Закрити")
+        btn_close.setFixedHeight(28)
+        btn_close.clicked.connect(self.close)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
+
+        self.setLayout(layout)
+        self.showMaximized()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Escape, Qt.Key_F11):
+            self.close()
+        super().keyPressEvent(event)
 
 
 class ImageViewer(QGraphicsView):
@@ -19,6 +60,7 @@ class ImageViewer(QGraphicsView):
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
         self._image: Optional[np.ndarray] = None
         self._scale = 1.0
+        self.setToolTip("⌃ Ctrl + прокрутка — зум  |  Два пальці — панорамування  |  Подвійний клік — повний екран")
 
     def set_image(self, img: np.ndarray):
         if img is None:
@@ -49,14 +91,15 @@ class ImageViewer(QGraphicsView):
     def wheelEvent(self, event):
         if self._pixmap_item is None:
             return
-        zoom_in_factor = 1.2
-        zoom_out_factor = 1 / zoom_in_factor
-        if event.angleDelta().y() > 0:
-            zoom_factor = zoom_in_factor
+        if event.modifiers() & Qt.ControlModifier:
+            zoom_in_factor = 1.2
+            zoom_out_factor = 1 / zoom_in_factor
+            zoom_factor = zoom_in_factor if event.angleDelta().y() > 0 else zoom_out_factor
+            self._scale *= zoom_factor
+            self.scale(zoom_factor, zoom_factor)
+            event.accept()
         else:
-            zoom_factor = zoom_out_factor
-        self._scale *= zoom_factor
-        self.scale(zoom_factor, zoom_factor)
+            super().wheelEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -64,3 +107,9 @@ class ImageViewer(QGraphicsView):
         if self._pixmap_item is not None and self._image is not None:
             self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
             self._scale = 1.0
+
+    def mouseDoubleClickEvent(self, event):
+        if self._image is not None:
+            dialog = FullscreenImageDialog(self._image, self.window())
+            dialog.exec_()
+        super().mouseDoubleClickEvent(event)

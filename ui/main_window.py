@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QDockWidget,
     QPlainTextEdit,
     QFrame,
+    QScrollArea,
     QSplitter,
     QDoubleSpinBox,
 )
@@ -76,7 +77,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Feature Matcher Studio")
-        self.resize(1400, 950)
+        self.resize(1280, 820)
 
         # Core components
         self.strategies: List[FeatureStrategy] = get_available_strategies()
@@ -133,8 +134,8 @@ class MainWindow(QMainWindow):
         """Initialize log panel as dockable widget at bottom."""
         self.log_widget = QPlainTextEdit()
         self.log_widget.setReadOnly(True)
-        self.log_widget.setMaximumHeight(150)
-        self.log_widget.setMinimumHeight(80)
+        self.log_widget.setMaximumHeight(100)
+        self.log_widget.setMinimumHeight(55)
 
         dock = QDockWidget("📋 Лог операцій", self)
         dock.setWidget(self.log_widget)
@@ -160,69 +161,70 @@ class MainWindow(QMainWindow):
         """Tab 1: Image comparison with controls, results, heatmap, and verdict."""
         tab = QWidget()
         main_layout = QHBoxLayout()
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(8, 8, 8, 8)
 
         # ==================== LEFT PANEL: Controls ====================
         left_panel = self._build_compare_controls()
 
         # ==================== CENTER: Results ====================
-        center_panel = QWidget()
         center_layout = QVBoxLayout()
-        center_layout.setSpacing(8)
+        center_layout.setSpacing(4)
 
-        # VERDICT & EXPLANATION (UX improvement #1)
+        # VERDICT & EXPLANATION — compact single row
         verdict_group = QGroupBox("📊 Результат аналізу")
-        verdict_layout = QVBoxLayout()
+        verdict_layout = QHBoxLayout()
+        verdict_layout.setContentsMargins(6, 4, 6, 4)
         self.verdict_label = QLabel("🟡 Очікування...")
-        self.verdict_label.setStyleSheet("font-weight: bold; font-size: 13pt; color: #FFA500;")
-        self.verdict_label.setAlignment(Qt.AlignCenter)
+        self.verdict_label.setStyleSheet("font-weight: bold; font-size: 11pt; color: #FFA500;")
+        self.verdict_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.explanation_label = QLabel("Завантажте два зображення та натисніть «Порівняти»")
-        self.explanation_label.setStyleSheet("font-size: 10pt; color: #CCCCCC;")
-        self.explanation_label.setAlignment(Qt.AlignCenter)
-        self.explanation_label.setWordWrap(True)
-        verdict_layout.addWidget(self.verdict_label)
-        verdict_layout.addWidget(self.explanation_label)
+        self.explanation_label.setStyleSheet("font-size: 9pt; color: #CCCCCC;")
+        self.explanation_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.explanation_label.setWordWrap(False)
+        verdict_layout.addWidget(self.verdict_label, 1)
+        verdict_layout.addWidget(self.explanation_label, 2)
         verdict_group.setLayout(verdict_layout)
         center_layout.addWidget(verdict_group, 0)
 
-        # Result viewer with label
-        result_group = QGroupBox("🖼️ Результат збігу")
+        # Result + Heatmap side by side
+        viewers_splitter = QSplitter(Qt.Horizontal)
+
+        result_group = QGroupBox("🖼️ Результат збігу  (подвійний клік — повний екран)")
         result_layout = QVBoxLayout()
+        result_layout.setContentsMargins(4, 4, 4, 4)
         self.compare_viewer = ImageViewer()
-        self.compare_viewer.setMinimumHeight(360)
+        self.compare_viewer.setMinimumHeight(240)
         result_layout.addWidget(self.compare_viewer)
         result_group.setLayout(result_layout)
-        center_layout.addWidget(result_group, 3)
+
+        heatmap_group = QGroupBox("🔥 Теплова карта  (подвійний клік — повний екран)")
+        heatmap_layout = QVBoxLayout()
+        heatmap_layout.setContentsMargins(4, 4, 4, 4)
+        self.heatmap_viewer = ImageViewer()
+        self.heatmap_viewer.setMinimumHeight(240)
+        heatmap_layout.addWidget(self.heatmap_viewer)
+        heatmap_group.setLayout(heatmap_layout)
+
+        viewers_splitter.addWidget(result_group)
+        viewers_splitter.addWidget(heatmap_group)
+        viewers_splitter.setStretchFactor(0, 3)
+        viewers_splitter.setStretchFactor(1, 2)
+        center_layout.addWidget(viewers_splitter, 1)
 
         # Metrics display
         self.similarity_label = QLabel("Схожість: —")
-        self.similarity_label.setStyleSheet("font-weight: bold; font-size: 12pt;")
-        center_layout.addWidget(self.similarity_label)
-
-        # Heatmap viewer
-        heatmap_group = QGroupBox("🔥 Теплова карта ключових точок")
-        heatmap_layout = QVBoxLayout()
-        self.heatmap_viewer = ImageViewer()
-        self.heatmap_viewer.setMinimumHeight(200)
-        heatmap_layout.addWidget(self.heatmap_viewer)
-        heatmap_group.setLayout(heatmap_layout)
-        center_layout.addWidget(heatmap_group, 1)
-
-        center_panel.setLayout(center_layout)
+        self.similarity_label.setStyleSheet("font-weight: bold; font-size: 10pt;")
+        center_layout.addWidget(self.similarity_label, 0)
 
         # ==================== Details panel (bottom) ====================
         self.details_label = QLabel("Деталі: —")
         self.details_label.setWordWrap(True)
         self.details_label.setStyleSheet("background:#2b2d37; padding:8px; border-radius:4px;")
-
-        # Combine center + details
-        right_layout = QVBoxLayout()
-        right_layout.addWidget(center_panel, 1)
-        right_layout.addWidget(self.details_label, 0)
+        center_layout.addWidget(self.details_label, 0)
 
         right_panel = QWidget()
-        right_panel.setLayout(right_layout)
+        right_panel.setLayout(center_layout)
 
         # ==================== Assemble ====================
         main_layout.addWidget(left_panel, 0)
@@ -235,19 +237,20 @@ class MainWindow(QMainWindow):
         """Build left control panel for image comparison."""
         panel = QWidget()
         layout = QVBoxLayout()
-        layout.setSpacing(12)
+        layout.setSpacing(6)
 
         # === SECTION 1: Load Images ===
         load_group = QGroupBox("1️⃣ Завантажити зображення")
         load_layout = QVBoxLayout()
-        load_layout.setSpacing(8)
+        load_layout.setSpacing(4)
+        load_layout.setContentsMargins(6, 6, 6, 6)
 
         btn_img1 = self._make_button("📂 Перше зображення", self.load_first_image, "Завантажте еталон для пошуку")
-        btn_img1.setMinimumHeight(40)
+        btn_img1.setFixedHeight(32)
         load_layout.addWidget(btn_img1)
 
         btn_img2 = self._make_button("📂 Друге зображення", self.load_second_image, "Завантажте зображення для порівняння")
-        btn_img2.setMinimumHeight(40)
+        btn_img2.setFixedHeight(32)
         load_layout.addWidget(btn_img2)
 
         load_group.setLayout(load_layout)
@@ -255,17 +258,20 @@ class MainWindow(QMainWindow):
 
         # === SECTION 2: Action ===
         action_group = QGroupBox("2️⃣ Аналіз")
-        action_layout = QVBoxLayout()
-        action_layout.setSpacing(8)
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(4)
+        action_layout.setContentsMargins(6, 6, 6, 6)
 
         self.compare_btn = self._make_button("▶️ Порівняти", self.compare, "Знайти збіги між зображеннями (RANSAC + гомографія)")
-        self.compare_btn.setMinimumHeight(48)
-        self.compare_btn.setStyleSheet(self.compare_btn.styleSheet() + "\nfont-size: 11pt; font-weight: bold;")
+        self.compare_btn.setFixedHeight(36)
+        self.compare_btn.setStyleSheet(self.compare_btn.styleSheet() + "\nfont-size: 10pt; font-weight: bold;")
         self.compare_btn.setEnabled(False)
-        action_layout.addWidget(self.compare_btn)
+        action_layout.addWidget(self.compare_btn, 2)
 
-        btn_heatmap = self._make_button("🔥 Heatmap", self.show_heatmap, "Показати щільність ключових точок")
-        action_layout.addWidget(btn_heatmap)
+        btn_heatmap = self._make_button("🔥", self.show_heatmap, "Показати щільність ключових точок")
+        btn_heatmap.setFixedHeight(36)
+        btn_heatmap.setFixedWidth(36)
+        action_layout.addWidget(btn_heatmap, 0)
 
         action_group.setLayout(action_layout)
         layout.addWidget(action_group)
@@ -273,7 +279,8 @@ class MainWindow(QMainWindow):
         # === SECTION 3: Settings (Advanced) ===
         settings_group = QGroupBox("⚙️ Налаштування (Image)")
         settings_layout = QFormLayout()
-        settings_layout.setSpacing(8)
+        settings_layout.setSpacing(4)
+        settings_layout.setContentsMargins(6, 6, 6, 6)
 
         self.feature_combo = QComboBox()
         for strat in self.strategies:
@@ -311,31 +318,51 @@ class MainWindow(QMainWindow):
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
 
-        # === SECTION 4: Utilities (NEW UX) ===
+        # === SECTION 4: Utilities ===
         utils_group = QGroupBox("🛠️ Утиліти")
         utils_layout = QVBoxLayout()
-        utils_layout.setSpacing(8)
+        utils_layout.setSpacing(4)
+        utils_layout.setContentsMargins(6, 6, 6, 6)
 
-        btn_demo = self._make_button("📺 Demo", self.run_demo, "Запустити демонстрацію зі вбудованими зображеннями")
-        utils_layout.addWidget(btn_demo)
+        row1 = QHBoxLayout()
+        btn_demo = self._make_button("📺 Demo", self.run_demo, "Запустити демонстрацію")
+        btn_demo.setFixedHeight(28)
+        btn_help = self._make_button("❓ Довідка", self.show_help_dialog, "Довідка про алгоритми та обмеження")
+        btn_help.setFixedHeight(28)
+        row1.addWidget(btn_demo)
+        row1.addWidget(btn_help)
+        utils_layout.addLayout(row1)
 
-        btn_save_img = self._make_button("💾 Зберегти результат (PNG)", self.save_result_image, "Зберегти результат аналізу як PNG")
-        utils_layout.addWidget(btn_save_img)
+        row2 = QHBoxLayout()
+        btn_save_img = self._make_button("💾 PNG", self.save_result_image, "Зберегти результат аналізу як PNG")
+        btn_save_img.setFixedHeight(28)
+        btn_save_log = self._make_button("📝 Лог", self.save_log_text, "Експортувати лог операцій")
+        btn_save_log.setFixedHeight(28)
+        row2.addWidget(btn_save_img)
+        row2.addWidget(btn_save_log)
+        utils_layout.addLayout(row2)
 
-        btn_save_log = self._make_button("📝 Зберегти лог (TXT)", self.save_log_text, "Експортувати лог операцій")
-        utils_layout.addWidget(btn_save_log)
-
-        btn_help = self._make_button("❓ Як це працює?", self.show_help_dialog, "Довідка про алгоритми та обмеження")
-        utils_layout.addWidget(btn_help)
+        btn_ransac = self._make_button(
+            "📊 До/Після RANSAC",
+            self.show_ransac_comparison,
+            "Рис. 3.4 — До та після відсіювання хибних відповідностей через RANSAC",
+        )
+        btn_ransac.setFixedHeight(30)
+        utils_layout.addWidget(btn_ransac)
 
         utils_group.setLayout(utils_layout)
         layout.addWidget(utils_group)
 
-        # Stretch to fill space
         layout.addStretch()
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedWidth(230)
+        scroll.setFrameShape(QFrame.NoFrame)
         panel.setLayout(layout)
-        return panel
+        return scroll
 
     def _make_button(self, text: str, callback, tooltip: str = "") -> QPushButton:
         """Create styled button with tooltip."""
@@ -349,21 +376,23 @@ class MainWindow(QMainWindow):
         """Tab 2: Video search with controls, timeline, and preview."""
         tab = QWidget()
         main_layout = QHBoxLayout()
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(8, 8, 8, 8)
 
         # ==================== LEFT PANEL: Controls ====================
         left_panel = self._build_video_controls()
 
         # ==================== CENTER: Results ====================
         center_layout = QVBoxLayout()
-        center_layout.setSpacing(8)
+        center_layout.setSpacing(4)
 
         # Progress
         progress_group = QGroupBox("Прогрес")
         progress_layout = QVBoxLayout()
+        progress_layout.setContentsMargins(6, 4, 6, 4)
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximum(100)
+        self.progress_bar.setFixedHeight(18)
         progress_layout.addWidget(self.progress_bar)
         progress_group.setLayout(progress_layout)
         center_layout.addWidget(progress_group, 0)
@@ -371,18 +400,20 @@ class MainWindow(QMainWindow):
         # Timeline: list of matched frames
         timeline_group = QGroupBox("📹 Кадри зі збігами")
         timeline_layout = QVBoxLayout()
+        timeline_layout.setContentsMargins(4, 4, 4, 4)
         self.timeline = QListWidget()
         self.timeline.itemSelectionChanged.connect(self.on_timeline_select)
-        self.timeline.setMaximumHeight(150)
+        self.timeline.setMaximumHeight(110)
         timeline_layout.addWidget(self.timeline)
         timeline_group.setLayout(timeline_layout)
         center_layout.addWidget(timeline_group, 0)
 
         # Video frame viewer
-        video_group = QGroupBox("📽️ Поточний кадр")
+        video_group = QGroupBox("📽️ Поточний кадр  (подвійний клік — повний екран)")
         video_layout = QVBoxLayout()
+        video_layout.setContentsMargins(4, 4, 4, 4)
         self.video_viewer = ImageViewer()
-        self.video_viewer.setMinimumHeight(300)
+        self.video_viewer.setMinimumHeight(220)
         video_layout.addWidget(self.video_viewer)
         video_group.setLayout(video_layout)
         center_layout.addWidget(video_group, 1)
@@ -390,7 +421,7 @@ class MainWindow(QMainWindow):
         # Details
         self.video_details_label = QLabel("Деталі: —")
         self.video_details_label.setWordWrap(True)
-        self.video_details_label.setStyleSheet("background:#2b2d37; padding:8px; border-radius:4px;")
+        self.video_details_label.setStyleSheet("background:#2b2d37; padding:5px; border-radius:4px;")
         center_layout.addWidget(self.video_details_label, 0)
 
         center_panel = QWidget()
@@ -407,19 +438,20 @@ class MainWindow(QMainWindow):
         """Build left control panel for video search."""
         panel = QWidget()
         layout = QVBoxLayout()
-        layout.setSpacing(12)
+        layout.setSpacing(6)
 
         # === SECTION 1: Load Video ===
         load_group = QGroupBox("1️⃣ Завантажити")
         load_layout = QVBoxLayout()
-        load_layout.setSpacing(8)
+        load_layout.setSpacing(4)
+        load_layout.setContentsMargins(6, 6, 6, 6)
 
         btn_video = self._make_button("📽️ Завантажити відео", self.load_video, "MP4, AVI, MKV")
-        btn_video.setMinimumHeight(40)
+        btn_video.setFixedHeight(32)
         load_layout.addWidget(btn_video)
-        
-        # Debug button: save first frame for comparison
+
         btn_debug = self._make_button("🔍 Зберегти перший кадр", self.save_first_frame, "Зберегти перший кадр відео для порівняння з еталоном")
+        btn_debug.setFixedHeight(28)
         load_layout.addWidget(btn_debug)
 
         load_group.setLayout(load_layout)
@@ -428,17 +460,20 @@ class MainWindow(QMainWindow):
         # === SECTION 2: Playback Control ===
         control_group = QGroupBox("2️⃣ Управління")
         control_layout = QVBoxLayout()
-        control_layout.setSpacing(8)
+        control_layout.setSpacing(4)
+        control_layout.setContentsMargins(6, 6, 6, 6)
 
         self.start_video_btn = self._make_button("▶️ Запустити пошук", self.start_video_search, "Почати пошук об'єкта у відео")
-        self.start_video_btn.setMinimumHeight(48)
-        self.start_video_btn.setStyleSheet(self.start_video_btn.styleSheet() + "\nfont-size: 11pt; font-weight: bold;")
+        self.start_video_btn.setFixedHeight(36)
+        self.start_video_btn.setStyleSheet(self.start_video_btn.styleSheet() + "\nfont-size: 10pt; font-weight: bold;")
         self.start_video_btn.setEnabled(False)
         control_layout.addWidget(self.start_video_btn)
 
         pause_layout = QHBoxLayout()
         btn_pause = self._make_button("⏸ Пауза", self.toggle_pause, "Зупинити/продовжити обробку")
+        btn_pause.setFixedHeight(28)
         btn_step = self._make_button("⏭ Крок", self.step_timeline, "Перейти до наступного кадру")
+        btn_step.setFixedHeight(28)
         pause_layout.addWidget(btn_pause)
         pause_layout.addWidget(btn_step)
         control_layout.addLayout(pause_layout)
@@ -449,7 +484,8 @@ class MainWindow(QMainWindow):
         # === SECTION 3: Parameters ===
         params_group = QGroupBox("⚙️ Параметри відео")
         params_layout = QFormLayout()
-        params_layout.setSpacing(8)
+        params_layout.setSpacing(4)
+        params_layout.setContentsMargins(6, 6, 6, 6)
 
         self.frame_skip_spin = QSpinBox()
         self.frame_skip_spin.setRange(1, 200)
@@ -466,15 +502,15 @@ class MainWindow(QMainWindow):
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
 
-        # === SECTION 4: Algorithm (reuse from settings) ===
-        algo_group = QGroupBox("⚙️ Алгоритм (як Image tab)")
+        # === SECTION 4: Algorithm ===
+        algo_group = QGroupBox("⚙️ Алгоритм")
         algo_layout = QFormLayout()
-        algo_layout.setSpacing(8)
+        algo_layout.setSpacing(4)
+        algo_layout.setContentsMargins(6, 6, 6, 6)
 
         self.feature_combo_video = QComboBox()
         for strat in self.strategies:
             self.feature_combo_video.addItem(strat.name)
-        # Link to main matcher
         self.feature_combo_video.currentIndexChanged.connect(self.on_feature_change)
         algo_layout.addRow("Алгоритм:", self.feature_combo_video)
 
@@ -483,8 +519,14 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedWidth(230)
+        scroll.setFrameShape(QFrame.NoFrame)
         panel.setLayout(layout)
-        return panel
+        return scroll
 
     def _init_settings_tab(self):
         """Tab 3: Global settings and algorithm reference."""
@@ -905,13 +947,13 @@ class MainWindow(QMainWindow):
         QGroupBox {
             border: 1px solid #3a3d4d;
             border-radius: 4px;
-            margin-top: 10px;
-            padding-top: 10px;
+            margin-top: 7px;
+            padding-top: 6px;
             color: #f5f5f5;
         }
         QGroupBox::title {
             subcontrol-origin: margin;
-            left: 10px;
+            left: 8px;
             padding: 0 3px 0 3px;
         }
         QCheckBox {
@@ -1007,7 +1049,23 @@ class MainWindow(QMainWindow):
             "\nОбмеження: слабка текстура, мультфільми, сильна оклюзія/розмиття."
         )
         QMessageBox.information(self, "Як це працює?", msg)
-    
+
+    def show_ransac_comparison(self):
+        """Рис. 3.4 — показати до/після RANSAC у повноекранному вікні."""
+        if self.last_result is None or self.last_result.ransac_vis is None:
+            QMessageBox.information(
+                self, "Немає даних",
+                "Спершу виконайте порівняння двох зображень."
+            )
+            return
+        from ui.image_viewer import FullscreenImageDialog
+        dlg = FullscreenImageDialog(self.last_result.ransac_vis, self)
+        dlg.setWindowTitle(
+            "Рис. 3.4 — Відсіювання хибних відповідностей через RANSAC  "
+            "(зверху: до RANSAC, знизу: після)"
+        )
+        dlg.exec_()
+
     def save_first_frame(self):
         """Save first frame of video for diagnostic comparison with reference image."""
         if not self.video_path:
