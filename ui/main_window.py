@@ -1,7 +1,7 @@
 import os
 from typing import Optional, List
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt5.QtGui import QIcon, QColor, QTextCursor, QFont
+from PyQt5.QtGui import QIcon, QColor, QTextCursor, QFont, QTextCharFormat
 from PyQt5.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -26,6 +26,8 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QSplitter,
     QDoubleSpinBox,
+    QDialog,
+    QApplication,
 )
 
 import cv2
@@ -35,6 +37,50 @@ from vision.matcher import ImageMatcher, MatchResult
 from vision.video_processor import VideoProcessor
 from vision.feature_strategies import get_available_strategies, FeatureStrategy
 from ui.image_viewer import ImageViewer
+
+
+def _put_text_unicode(img_bgr: np.ndarray, text: str, pos: tuple,
+                      color_bgr: tuple, font_size: int = 30) -> None:
+    """Render Unicode text onto a BGR numpy image using PIL (supports Cyrillic)."""
+    from PIL import Image, ImageDraw, ImageFont
+    import os
+
+    _FONT_CANDIDATES = [
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+    font = None
+    for path in _FONT_CANDIDATES:
+        if os.path.exists(path):
+            try:
+                font = ImageFont.truetype(path, font_size)
+                break
+            except Exception:
+                continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(pil)
+
+    # Dark background strip behind text
+    try:
+        bbox = draw.textbbox(pos, text, font=font)
+    except AttributeError:
+        w, h = draw.textsize(text, font=font)
+        bbox = (pos[0], pos[1], pos[0] + w, pos[1] + h)
+    pad = 6
+    draw.rectangle(
+        (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad),
+        fill=(20, 20, 20),
+    )
+    draw.text(pos, text, font=font, fill=(color_bgr[2], color_bgr[1], color_bgr[0]))
+
+    result = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    np.copyto(img_bgr, result)
 
 
 class VideoWorker(QThread):
@@ -71,6 +117,58 @@ class VideoWorker(QThread):
             self.finished.emit()
 
 
+class LogWindow(QDialog):
+    """Full log in a separate resizable window, sharing the same document."""
+
+    def __init__(self, source_log: QPlainTextEdit, parent=None):
+        super().__init__(parent)
+        self.source_log = source_log
+        self.setWindowTitle("📋 Лог операцій")
+        self.setWindowFlags(Qt.Window | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        self.resize(860, 560)
+        self.setStyleSheet("""
+            QDialog, QWidget { background-color: #1e1f29; color: #f5f5f5; }
+            QPushButton {
+                background-color: #2d2f3a; border: 1px solid #3a3d4d;
+                padding: 4px 10px; border-radius: 4px; color: #f5f5f5;
+            }
+            QPushButton:hover { background-color: #3a3d4d; }
+            QPlainTextEdit {
+                background-color: #2b2d37; border: 1px solid #3a3d4d;
+                color: #f5f5f5; border-radius: 3px;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        toolbar = QHBoxLayout()
+        btn_copy = QPushButton("📋 Копіювати")
+        btn_copy.setFixedHeight(26)
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(source_log.toPlainText()))
+        btn_clear = QPushButton("🗑 Очистити")
+        btn_clear.setFixedHeight(26)
+        btn_clear.clicked.connect(source_log.clear)
+        toolbar.addWidget(btn_copy)
+        toolbar.addWidget(btn_clear)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        self.view = QPlainTextEdit()
+        self.view.setReadOnly(True)
+        self.view.setDocument(source_log.document())
+        self.view.setFont(QFont("Courier New", 10))
+        layout.addWidget(self.view, 1)
+        self.setLayout(layout)
+        self.view.moveCursor(self.view.textCursor().End)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     """Main application window with image/video matching interface."""
 
@@ -88,6 +186,8 @@ class MainWindow(QMainWindow):
         # State
         self.image1: Optional[np.ndarray] = None
         self.image2: Optional[np.ndarray] = None
+        self.image1_name: str = "—"
+        self.image2_name: str = "—"
         self.video_path: Optional[str] = None
         self.video_matches: List[tuple[int, MatchResult]] = []
         self.current_tab = 0  # 0=Images, 1=Video
@@ -96,7 +196,7 @@ class MainWindow(QMainWindow):
         # UI components (initialized later)
         self.tabs: Optional[QTabWidget] = None
         self.log_widget: Optional[QPlainTextEdit] = None
-        self.status_indicator: Optional[QLabel] = None
+        self.status_indicator = None  # removed, using statusBar().showMessage()
 
         # Button states for enable/disable
         self.compare_btn: Optional[QPushButton] = None
@@ -131,31 +231,58 @@ class MainWindow(QMainWindow):
 
     # UI pieces
     def _init_log_dock(self):
-        """Initialize log panel as dockable widget at bottom."""
+        """Initialize compact log dock with custom title bar."""
         self.log_widget = QPlainTextEdit()
         self.log_widget.setReadOnly(True)
-        self.log_widget.setMaximumHeight(100)
-        self.log_widget.setMinimumHeight(55)
+        self.log_widget.setFixedHeight(58)
+        self.log_widget.setFont(QFont("Courier New", 9))
+        self.log_widget.setStyleSheet(
+            "QPlainTextEdit { background:#1a1b24; border:none; color:#f5f5f5; padding:2px 6px; }"
+        )
 
-        dock = QDockWidget("📋 Лог операцій", self)
+        _btn = (
+            "QPushButton { background:transparent; border:none; color:#666;"
+            " font-size:12px; padding:0; }"
+            "QPushButton:hover { color:#ccc; }"
+        )
+
+        btn_expand = QPushButton("⛶")
+        btn_expand.setFixedSize(18, 18)
+        btn_expand.setFlat(True)
+        btn_expand.setStyleSheet(_btn)
+        btn_expand.setToolTip("Відкрити у вікні")
+        btn_expand.clicked.connect(lambda: LogWindow(self.log_widget, self).show())
+
+        btn_clear = QPushButton("✕")
+        btn_clear.setFixedSize(18, 18)
+        btn_clear.setFlat(True)
+        btn_clear.setStyleSheet(_btn)
+        btn_clear.setToolTip("Очистити")
+        btn_clear.clicked.connect(self.log_widget.clear)
+
+        title_bar = QWidget()
+        title_bar.setFixedHeight(20)
+        title_bar.setStyleSheet("background:#16171f;")
+        tb_layout = QHBoxLayout()
+        tb_layout.setContentsMargins(8, 0, 4, 0)
+        tb_layout.setSpacing(4)
+        lbl = QLabel("лог")
+        lbl.setStyleSheet("color:#555; font-size:9px; letter-spacing:1px;")
+        tb_layout.addWidget(lbl)
+        tb_layout.addStretch()
+        tb_layout.addWidget(btn_expand)
+        tb_layout.addWidget(btn_clear)
+        title_bar.setLayout(tb_layout)
+
+        dock = QDockWidget(self)
+        dock.setTitleBarWidget(title_bar)
         dock.setWidget(self.log_widget)
         dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.TopDockWidgetArea)
         self.addDockWidget(Qt.BottomDockWidgetArea, dock)
 
     def _init_status_bar(self):
-        """Initialize status bar with indicator and progress info."""
-        self.status_indicator = QLabel("✓ Готово")
-        self.status_indicator.setStyleSheet(self._status_color("green"))
-        self.status_indicator.setMinimumWidth(120)
-
-        self.statusBar().addPermanentWidget(self.status_indicator)
-
-    def _status_color(self, color: str) -> str:
-        """Return QSS for colored status indicator."""
-        return (
-            f"QLabel {{ background-color:{color}; color:#fff; padding:6px 12px; "
-            f"border-radius:4px; font-weight:bold; }}"
-        )
+        self.statusBar().showMessage("Готово")
+        self.statusBar().setStyleSheet("QStatusBar { color:#888; font-size:9pt; }")
 
     def _init_compare_tab(self):
         """Tab 1: Image comparison with controls, results, heatmap, and verdict."""
@@ -350,6 +477,30 @@ class MainWindow(QMainWindow):
         btn_ransac.setFixedHeight(30)
         utils_layout.addWidget(btn_ransac)
 
+        btn_gray = self._make_button(
+            "🔲 BGR → Grayscale",
+            self.show_grayscale_comparison,
+            "Рис. 3.12 — Перетворення зображення у Grayscale перед детектуванням ознак",
+        )
+        btn_gray.setFixedHeight(30)
+        utils_layout.addWidget(btn_gray)
+
+        btn_blur = self._make_button(
+            "🔵 Gaussian Blur",
+            self.show_blur_comparison,
+            "Рис. 3.13 — Вплив Gaussian blur на зображення перед matching",
+        )
+        btn_blur.setFixedHeight(30)
+        utils_layout.addWidget(btn_blur)
+
+        btn_preproc = self._make_button(
+            "🎨 Preprocessing ×3",
+            self.show_preprocessing_variants,
+            "Рис. 3.14 — Grayscale / CLAHE / Canny у fallback-механізмі",
+        )
+        btn_preproc.setFixedHeight(30)
+        utils_layout.addWidget(btn_preproc)
+
         utils_group.setLayout(utils_layout)
         layout.addWidget(utils_group)
 
@@ -413,7 +564,7 @@ class MainWindow(QMainWindow):
         video_layout = QVBoxLayout()
         video_layout.setContentsMargins(4, 4, 4, 4)
         self.video_viewer = ImageViewer()
-        self.video_viewer.setMinimumHeight(220)
+        self.video_viewer.setMinimumHeight(240)
         video_layout.addWidget(self.video_viewer)
         video_group.setLayout(video_layout)
         center_layout.addWidget(video_group, 1)
@@ -621,7 +772,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Помилка", "Не вдалося завантажити зображення")
                 return
             self.image1 = img
-            self._log_success(f"✓ Перше зображення завантажено: {path.split('/')[-1]}")
+            self.image1_name = os.path.basename(path)
+            self._log_success(f"✓ Перше зображення завантажено: {self.image1_name}")
             if self.image2 is not None:
                 self.compare_btn.setEnabled(True)
             if self.video_path:
@@ -636,7 +788,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Помилка", "Не вдалося завантажити зображення")
                 return
             self.image2 = img
-            self._log_success(f"✓ Друге зображення завантажено: {path.split('/')[-1]}")
+            self.image2_name = os.path.basename(path)
+            self._log_success(f"✓ Друге зображення завантажено: {self.image2_name}")
             if self.image1 is not None:
                 self.compare_btn.setEnabled(True)
 
@@ -686,6 +839,11 @@ class MainWindow(QMainWindow):
         self.video_matches.clear()
         self.timeline.clear()
         self.progress_bar.setValue(0)
+
+        self.feature_combo.setEnabled(False)
+        self.feature_combo_video.setEnabled(False)
+        self.matcher_mode_combo.setEnabled(False)
+        self.start_video_btn.setEnabled(False)
 
         self._set_status("Обробка відео...", "#d4b106")
         self._log(f"⏱ Запуск пошуку: крок={self.frame_skip_spin.value()}, поріг={self.sim_threshold_spin.value()}%")
@@ -742,11 +900,15 @@ class MainWindow(QMainWindow):
             f"⏱ Час метчінгу: {result.match_time_ms:.1f} мс | "
             f"Тіки: start={result.start_tick:.6f}, end={result.end_tick:.6f}, Δ={result.tick_diff:.6f}"
         )
-        self._log_success(f"✓ Кадр #{frame_idx}: {result.similarity:.1f}% (адаптивний {result.adaptive_threshold:.1f}%, час={result.match_time_ms:.1f} мс)")
+        self._log(f"  ✓ Кадр #{frame_idx}: {result.similarity:.1f}% | {result.match_time_ms:.1f}мс", "#4CAF50")
 
     def _on_video_finished(self):
         """Callback when video processing finishes."""
         count = len(self.video_matches)
+        self.feature_combo.setEnabled(True)
+        self.feature_combo_video.setEnabled(True)
+        self.matcher_mode_combo.setEnabled(True)
+        self.start_video_btn.setEnabled(True)
         self._set_status("✓ Готово", "green")
         
         if count == 0:
@@ -771,9 +933,14 @@ class MainWindow(QMainWindow):
             )
         else:
             self._log_success(f"✓ Пошук завершено. Знайдено {count} кадрів")
+            self._log_video_summary()
 
     def _on_video_error(self, message: str):
         """Callback for video processing error."""
+        self.feature_combo.setEnabled(True)
+        self.feature_combo_video.setEnabled(True)
+        self.matcher_mode_combo.setEnabled(True)
+        self.start_video_btn.setEnabled(True)
         self._set_status("✗ Помилка", "#ff4d4f")
         self._log_error(f"✗ Помилка: {message}")
         QMessageBox.critical(self, "Помилка відео", message)
@@ -795,12 +962,15 @@ class MainWindow(QMainWindow):
     def on_feature_change(self, idx: int):
         """Change feature detection algorithm."""
         if 0 <= idx < len(self.strategies):
-            self.matcher.set_strategy(self.strategies[idx])
+            strategy = self.strategies[idx]
+            self.matcher.set_strategy(strategy)
+            # SIFT+FLANN pipeline only when user explicitly picks SIFT
+            self.video_processor.use_sift = (strategy.name == "SIFT")
             # sync combo on video tab
             self.feature_combo_video.blockSignals(True)
             self.feature_combo_video.setCurrentIndex(idx)
             self.feature_combo_video.blockSignals(False)
-            self._log(f"🔍 Алгоритм ознак: {self.strategies[idx].name}")
+            self._log(f"🔍 Алгоритм ознак: {strategy.name}")
 
     def on_matcher_mode_change(self, idx: int):
         """Change matcher mode."""
@@ -861,11 +1031,7 @@ class MainWindow(QMainWindow):
         self.details_label.setText(detail_text)
         self.setWindowTitle(title)
 
-        self._log_success(
-            f"✓ Збіг знайдено: {result.similarity:.1f}% (inliers={result.inliers}, "
-            f"good={result.good_matches}, stability={result.stability:.3f}, "
-            f"час={result.match_time_ms:.1f} мс)"
-        )
+        self._log_result_block(result, "РЕЗУЛЬТАТ ПОРІВНЯННЯ ЗОБРАЖЕНЬ")
 
     def _update_verdict(self, result: MatchResult):
         """Update verdict and explanation labels based on result."""
@@ -880,10 +1046,8 @@ class MainWindow(QMainWindow):
         self.explanation_label.setText(result.explanation)
         self.explanation_label.setStyleSheet("font-size: 10pt; color: #CCCCCC;")
 
-    def _set_status(self, text: str, color: str):
-        """Update status indicator."""
-        self.status_indicator.setText(text)
-        self.status_indicator.setStyleSheet(self._status_color(color))
+    def _set_status(self, text: str, color: str = ""):
+        self.statusBar().showMessage(text)
 
     def _apply_dark_theme(self):
         """Apply dark theme stylesheet."""
@@ -975,22 +1139,87 @@ class MainWindow(QMainWindow):
         """
         self.setStyleSheet(palette)
 
-    def _log(self, text: str):
-        """Log plain message."""
-        self.log_widget.appendPlainText(text)
-        self.log_widget.moveCursor(self.log_widget.textCursor().End)
+    def _log_result_block(self, result: MatchResult, title: str = "РЕЗУЛЬТАТ ПОРІВНЯННЯ"):
+        sep  = "═" * 50
+        div  = "─" * 50
+        if result.verdict.startswith("🟢"):
+            verdict_color = "#4CAF50"
+        elif result.verdict.startswith("🟡"):
+            verdict_color = "#FFA500"
+        else:
+            verdict_color = "#FF4444"
+        sim_color = "#4CAF50" if result.similarity >= 30 else "#FFA500" if result.similarity > 0 else "#FF4444"
+
+        self._log(sep, "#5b8def")
+        self._log(f"  📊 {title}", "#5b8def")
+        self._log(sep, "#5b8def")
+        self._log(f"  Файл 1:          {self.image1_name}", "#aaaaaa")
+        self._log(f"  Файл 2:          {self.image2_name}", "#aaaaaa")
+        self._log(f"  Алгоритм:        {result.method}", "#f5f5f5")
+        self._log(f"  Схожість:        {result.similarity:.2f}%", sim_color)
+        self._log(f"  Добра схожість:  {result.similarity_good:.2f}%", "#cccccc")
+        self._log(f"  Інлайєри:        {result.inliers}", "#f5f5f5")
+        self._log(f"  Добрі збіги:     {result.good_matches}", "#f5f5f5")
+        self._log(f"  Reproj error:    {result.reprojection_error:.4f}", "#f5f5f5")
+        self._log(f"  Stability:       {result.stability:.4f}", "#f5f5f5")
+        self._log(f"  Адапт. поріг:    {result.adaptive_threshold:.2f}%", "#cccccc")
+        self._log(f"  Час мечінгу:     {result.match_time_ms:.2f} мс", "#f5f5f5")
+        self._log(div, "#3a3d4d")
+        self._log(f"  Вердикт:         {result.verdict}", verdict_color)
+        self._log(f"  Пояснення:       {result.explanation}", "#cccccc")
+        self._log(sep, "#5b8def")
+
+    def _log_video_summary(self):
+        matches = self.video_matches
+        count = len(matches)
+        sep = "═" * 50
+        div = "─" * 50
+
+        self._log(sep, "#5b8def")
+        self._log(f"  📹 ПІДСУМОК ПОШУКУ У ВІДЕО — {count} кадрів", "#5b8def")
+        self._log(sep, "#5b8def")
+        self._log(f"  Еталон:          {self.image1_name}", "#aaaaaa")
+        self._log(f"  Відео:           {os.path.basename(self.video_path) if self.video_path else '—'}", "#aaaaaa")
+
+        for i, (frame_idx, result) in enumerate(matches):
+            prefix = "└─" if i == count - 1 else "├─"
+            color = "#4CAF50" if result.verdict.startswith("🟢") else "#FFA500"
+            self._log(
+                f"  {prefix} Кадр #{frame_idx:<5} │ {result.similarity:5.1f}% │"
+                f" inliers={result.inliers:<3} │ reproj={result.reprojection_error:.3f}"
+                f" │ {result.match_time_ms:.1f}мс │ {result.verdict[:2]}",
+                color
+            )
+
+        if count > 0:
+            avg_sim  = sum(r.similarity     for _, r in matches) / count
+            avg_time = sum(r.match_time_ms  for _, r in matches) / count
+            avg_repr = sum(r.reprojection_error for _, r in matches) / count
+            self._log(div, "#3a3d4d")
+            self._log(f"  Середня схожість:    {avg_sim:.2f}%", "#f5f5f5")
+            self._log(f"  Середній час:        {avg_time:.2f} мс", "#f5f5f5")
+            self._log(f"  Середній reproj err: {avg_repr:.4f}", "#f5f5f5")
+
+        self._log(sep, "#5b8def")
+
+    def _log(self, text: str, color: str = "#f5f5f5"):
+        cursor = self.log_widget.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.setCharFormat(fmt)
+        cursor.insertText(text + "\n")
+        self.log_widget.setTextCursor(cursor)
+        self.log_widget.ensureCursorVisible()
 
     def _log_success(self, text: str):
-        """Log success message (green)."""
-        self._log(text)
+        self._log(text, "#4CAF50")
 
     def _log_warn(self, text: str):
-        """Log warning message (yellow)."""
-        self._log(text)
+        self._log(text, "#FFA500")
 
     def _log_error(self, text: str):
-        """Log error message (red)."""
-        self._log(text)
+        self._log(text, "#FF4444")
 
     # ==================== NEW: Demo, Save, Help functionality ====================
 
@@ -1066,6 +1295,87 @@ class MainWindow(QMainWindow):
         )
         dlg.exec_()
 
+    def show_preprocessing_variants(self):
+        """Рис. 3.14 — три варіанти preprocessing: Grayscale / CLAHE / Canny."""
+        img = self.image1 if self.image1 is not None else self.image2
+        if img is None:
+            QMessageBox.information(self, "Немає даних", "Завантажте хоча б одне зображення.")
+            return
+
+        from ui.image_viewer import FullscreenImageDialog
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        clahe      = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray_clahe = clahe.apply(gray)
+
+        gray_canny = cv2.Canny(gray, 50, 150)
+
+        p1 = cv2.cvtColor(gray,       cv2.COLOR_GRAY2BGR)
+        p2 = cv2.cvtColor(gray_clahe, cv2.COLOR_GRAY2BGR)
+        p3 = cv2.cvtColor(gray_canny, cv2.COLOR_GRAY2BGR)
+
+        _put_text_unicode(p1, "Варіант 1 — Grayscale",                      (10, 8), (210, 210, 210), 32)
+        _put_text_unicode(p2, "Варіант 2 — CLAHE  (clipLimit=2, grid=8×8)", (10, 8), (80,  200, 255),  32)
+        _put_text_unicode(p3, "Варіант 3 — Canny  (thr1=50, thr2=150)",     (10, 8), (60,  220, 100),  32)
+
+        div = np.full((img.shape[0], 6, 3), (60, 60, 60), dtype=np.uint8)
+        vis = np.hstack([p1, div, p2, div, p3])
+
+        dlg = FullscreenImageDialog(vis, self)
+        dlg.setWindowTitle("Рис. 3.14 — Варіанти preprocessing у fallback-механізмі (Grayscale / CLAHE / Canny)")
+        dlg.exec_()
+
+    def show_blur_comparison(self):
+        """Рис. 3.13 — без blur vs Gaussian blur kernel=9."""
+        img = self.image1 if self.image1 is not None else self.image2
+        if img is None:
+            QMessageBox.information(self, "Немає даних", "Завантажте хоча б одне зображення.")
+            return
+
+        from ui.image_viewer import FullscreenImageDialog
+
+        kernel = 9
+        gray        = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray_blur   = cv2.GaussianBlur(gray, (kernel, kernel), 0)
+        left  = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        right = cv2.cvtColor(gray_blur, cv2.COLOR_GRAY2BGR)
+
+        _put_text_unicode(left,  "Без Gaussian blur  (оригінал)",        (10, 8), (210, 210, 210), font_size=32)
+        _put_text_unicode(right, f"Gaussian blur  (kernel = {kernel}×{kernel})", (10, 8), (80, 180, 255),  font_size=32)
+
+        divider = np.full((img.shape[0], 6, 3), (60, 60, 60), dtype=np.uint8)
+        vis = np.hstack([left, divider, right])
+
+        dlg = FullscreenImageDialog(vis, self)
+        dlg.setWindowTitle(f"Рис. 3.13 — Вплив Gaussian blur (kernel={kernel}×{kernel}) перед matching")
+        dlg.exec_()
+
+    def show_grayscale_comparison(self):
+        """Рис. 3.12 — BGR оригінал поруч з Grayscale версією."""
+        img = self.image1 if self.image1 is not None else self.image2
+        if img is None:
+            QMessageBox.information(self, "Немає даних", "Завантажте хоча б одне зображення.")
+            return
+
+        from ui.image_viewer import FullscreenImageDialog
+
+        gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray3 = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        left  = img.copy()
+        right = gray3.copy()
+
+        _put_text_unicode(left,  "Оригінал  (BGR, 3 канали)", (10, 8),  (60, 200, 60),  font_size=32)
+        _put_text_unicode(right, "Grayscale  (1 канал)",       (10, 8),  (210, 210, 210), font_size=32)
+
+        divider = np.full((img.shape[0], 6, 3), (60, 60, 60), dtype=np.uint8)
+        vis = np.hstack([left, divider, right])
+
+        dlg = FullscreenImageDialog(vis, self)
+        dlg.setWindowTitle("Рис. 3.12 — Перетворення BGR → Grayscale перед детектуванням ознак")
+        dlg.exec_()
+
     def save_first_frame(self):
         """Save first frame of video for diagnostic comparison with reference image."""
         if not self.video_path:
@@ -1092,8 +1402,8 @@ class MainWindow(QMainWindow):
         self._log_success(f"Перший кадр збережено: {path}")
         
         # Also show comparison info
-        if self.img1 is not None:
-            ref_size = f"{self.img1.shape[1]}x{self.img1.shape[0]}"
+        if self.image1 is not None:
+            ref_size = f"{self.image1.shape[1]}x{self.image1.shape[0]}"
             frame_size = f"{frame.shape[1]}x{frame.shape[0]}"
             info = f"Порівняння розмірів:\n\nЕталон: {ref_size}\nКадр відео: {frame_size}\n\n"
             info += "Рекомендація: еталон і кадри повинні бути схожого розміру та якості"

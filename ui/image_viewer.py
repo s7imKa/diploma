@@ -76,7 +76,8 @@ class ImageViewer(QGraphicsView):
         else:
             self._pixmap_item.setPixmap(pixmap)
         self._scene.setSceneRect(0, 0, w, h)
-        self.reset_zoom()
+        self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+        self._scale = 1.0
 
     def clear(self):
         self._scene.clear()

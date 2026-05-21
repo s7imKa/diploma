@@ -219,12 +219,23 @@ class ImageMatcher:
                 singlePointColor=None,
                 flags=cv2.DrawMatchesFlags_DRAW_OVER_OUTIMG,
             )
-        # homography frame
+        # homography frame — validate before drawing
         if homography is not None and inlier_count >= 4:
-            h, w = img1.shape[:2]
-            corners = np.float32([[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]).reshape(-1, 1, 2)
-            proj = cv2.perspectiveTransform(corners, homography) + np.array([w, 0])
-            after = cv2.polylines(after, [np.int32(proj)], True, (0, 255, 255), 3, cv2.LINE_AA)
+            try:
+                h, w = img1.shape[:2]
+                corners = np.float32(
+                    [[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]
+                ).reshape(-1, 1, 2)
+                proj = cv2.perspectiveTransform(corners, homography)
+                if proj is not None and np.all(np.isfinite(proj)):
+                    max_dim = (img1.shape[1] + img2.shape[1]) * 3
+                    if np.all(np.abs(proj) < max_dim):
+                        proj_shifted = proj + np.array([w, 0], dtype=np.float32)
+                        after = cv2.polylines(
+                            after, [np.int32(proj_shifted)], True, (0, 255, 255), 3, cv2.LINE_AA
+                        )
+            except Exception:
+                pass
 
         cv2.putText(after,
                     f"Після RANSAC: {inlier_count} інлайєрів (зелені)  |  {outlier_count} відкинуто (червоні)",
@@ -295,21 +306,43 @@ class ImageMatcher:
         mask,
         homography: Optional[np.ndarray],
     ) -> np.ndarray:
-        matches_mask = mask.ravel().tolist() if mask is not None else None
-        draw_params = dict(matchColor=(0, 255, 0),  # lines for inliers
-                           singlePointColor=(255, 0, 0),
-                           matchesMask=matches_mask,
-                           flags=cv2.DrawMatchesFlags_DEFAULT)
+        if mask is not None:
+            # Draw only RANSAC inliers in green
+            matches_mask = mask.ravel().tolist()
+            draw_params = dict(
+                matchColor=(0, 220, 0),
+                singlePointColor=(180, 180, 180),
+                matchesMask=matches_mask,
+                flags=cv2.DrawMatchesFlags_DEFAULT,
+            )
+            vis = cv2.drawMatches(img1, kp1, img2, kp2, matches, None, **draw_params)
+        else:
+            # No valid mask — show top-30 best matches in blue-orange to avoid clutter
+            top = sorted(matches, key=lambda m: m.distance)[:30]
+            draw_params = dict(
+                matchColor=(0, 165, 255),
+                singlePointColor=(180, 180, 180),
+                flags=cv2.DrawMatchesFlags_DEFAULT,
+            )
+            vis = cv2.drawMatches(img1, kp1, img2, kp2, top, None, **draw_params)
 
-        vis = cv2.drawMatches(img1, kp1, img2, kp2, matches, None, **draw_params)
-
+        # Draw homography frame only when projection is numerically sane
         if homography is not None and mask is not None and mask.sum() >= 4:
-            h, w = img1.shape[:2]
-            corners = np.float32([[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]).reshape(-1, 1, 2)
-            projected = cv2.perspectiveTransform(corners, homography)
-            offset = np.array([w, 0])  # shift because drawMatches concatenates images horizontally
-            projected_shifted = projected + offset
-            vis = cv2.polylines(vis, [np.int32(projected_shifted)], True, (0, 255, 255), 3, cv2.LINE_AA)
+            try:
+                h, w = img1.shape[:2]
+                corners = np.float32(
+                    [[0, 0], [0, h - 1], [w - 1, h - 1], [w - 1, 0]]
+                ).reshape(-1, 1, 2)
+                proj = cv2.perspectiveTransform(corners, homography)
+                if proj is not None and np.all(np.isfinite(proj)):
+                    max_dim = (img1.shape[1] + img2.shape[1]) * 3
+                    if np.all(np.abs(proj) < max_dim):
+                        proj_shifted = proj + np.array([w, 0], dtype=np.float32)
+                        vis = cv2.polylines(
+                            vis, [np.int32(proj_shifted)], True, (0, 255, 255), 3, cv2.LINE_AA
+                        )
+            except Exception:
+                pass
 
         return vis
 
